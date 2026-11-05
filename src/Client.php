@@ -13,7 +13,7 @@ declare(strict_types=1);
 
 namespace Symfony\Component\Panther;
 
-use Facebook\WebDriver\Exception\InvalidArgumentException;
+use Facebook\WebDriver\Exception\InvalidArgumentException as WebDriverInvalidArgumentException;
 use Facebook\WebDriver\Exception\NoSuchElementException;
 use Facebook\WebDriver\Exception\TimeoutException;
 use Facebook\WebDriver\Exception\WebDriverException;
@@ -562,7 +562,7 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         if ($this->browserManager instanceof ChromeManager) {
             try {
                 $events = $this->webDriver->manage()->getLog('performance');
-            } catch (InvalidArgumentException) {
+            } catch (WebDriverInvalidArgumentException) {
                 $events = [];
             }
 
