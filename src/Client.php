@@ -36,16 +36,19 @@ use Symfony\Component\BrowserKit\Response;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\Form;
 use Symfony\Component\DomCrawler\Link;
+use Symfony\Component\HttpFoundation\Response as HttpFoundationResponse;
 use Symfony\Component\Panther\Cookie\CookieJar;
 use Symfony\Component\Panther\DomCrawler\Crawler as PantherCrawler;
 use Symfony\Component\Panther\DomCrawler\Form as PantherForm;
 use Symfony\Component\Panther\DomCrawler\Link as PantherLink;
 use Symfony\Component\Panther\Exception\InvalidArgumentException;
 use Symfony\Component\Panther\Exception\LogicException;
+use Symfony\Component\Panther\Exception\RuntimeException;
 use Symfony\Component\Panther\ProcessManager\BrowserManagerInterface;
 use Symfony\Component\Panther\ProcessManager\ChromeManager;
 use Symfony\Component\Panther\ProcessManager\FirefoxManager;
 use Symfony\Component\Panther\ProcessManager\SeleniumManager;
+use Symfony\Component\Panther\WebDriver\Bidi\NavigationResponseRecorder;
 use Symfony\Component\Panther\WebDriver\PantherWebDriverExpectedCondition;
 use Symfony\Component\Panther\WebDriver\WebDriverMouse;
 
@@ -59,10 +62,14 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
 {
     use ExceptionThrower;
 
+    private const RESPONSE_TIMEOUT = 5.0;
+
     private ?WebDriver $webDriver = null;
     private BrowserManagerInterface $browserManager;
     private ?string $baseUri = null;
     private bool $isFirefox = false;
+    private ?NavigationResponseRecorder $responseRecorder = null;
+    private ?string $responseRecorderError = null;
 
     /**
      * @param string[]|null $arguments
@@ -122,6 +129,7 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         }
 
         $this->webDriver = $this->browserManager->start();
+        $this->startResponseRecorder();
         if ($this->browserManager instanceof FirefoxManager) {
             $this->isFirefox = true;
 
@@ -148,9 +156,61 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         throw new LogicException('HttpFoundation Request object is not available when using WebDriver.');
     }
 
+    /**
+     * Returns the HTTP response of the page currently displayed in the browser.
+     *
+     * Requires WebDriver BiDi (enabled by default with Chrome and Firefox, use the "webSocketUrl" capability with Selenium).
+     * The content is the raw HTTP body when the browser can provide it, the current DOM of the page otherwise.
+     */
     public function getResponse(): object
     {
-        throw new LogicException('HttpFoundation Response object is not available when using WebDriver.');
+        $this->start();
+
+        if (null === $this->responseRecorder) {
+            throw new LogicException($this->responseRecorderError ?? 'HttpFoundation Response object is not available when using WebDriver without BiDi: set the "webSocketUrl" capability to true to enable it.');
+        }
+
+        try {
+            $data = $this->responseRecorder->getResponse($this->webDriver->getWindowHandle(), $this->webDriver->getCurrentURL(...), $this->getNavigationTiming(...), self::RESPONSE_TIMEOUT);
+            $body = null;
+            if (null !== $data) {
+                $contentType = '';
+                foreach ($data['response']['headers'] ?? [] as $header) {
+                    if ('content-type' === strtolower($header['name'])) {
+                        $contentType = $header['value']['value'] ?? '';
+                    }
+                }
+                $charset = preg_match('{;\s*charset\s*=\s*"?([\w.:-]+)}i', $contentType, $m) ? $m[1] : null;
+                $body = $this->responseRecorder->getBody($data['request'], $charset, self::RESPONSE_TIMEOUT);
+            }
+        } catch (RuntimeException|\JsonException $e) {
+            throw new LogicException(\sprintf('HttpFoundation Response object is not available: the WebDriver BiDi connection failed (%s).', $e->getMessage()), 0, $e);
+        }
+
+        if (null === $data) {
+            throw new LogicException('HttpFoundation Response object is not available for the current page (no HTTP response was received for it).');
+        }
+        $data = $data['response'];
+
+        $headers = [];
+        foreach ($data['headers'] ?? [] as $header) {
+            $value = $header['value']['value'] ?? '';
+            if ('base64' === ($header['value']['type'] ?? null)) {
+                $value = base64_decode($value, true) ?: '';
+            }
+            // Chrome joins repeated headers (e.g. Set-Cookie) with a new line
+            foreach (explode("\n", $value) as $v) {
+                $headers[$header['name']][] = $v;
+            }
+        }
+
+        $response = new HttpFoundationResponse($body ?? $this->webDriver->getPageSource(), $data['status'], $headers);
+        $response->setStatusCode($data['status'], '' !== ($data['statusText'] ?? '') ? $data['statusText'] : null);
+        if (preg_match('{^(?:http/)?(\d(?:\.\d)?)$}i', $data['protocol'] ?? '', $m)) {
+            $response->setProtocolVersion(str_contains($m[1], '.') ? $m[1] : $m[1].'.0');
+        }
+
+        return $response;
     }
 
     public function followRedirects($followRedirects = true): void
@@ -286,6 +346,7 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
     protected function createCrawler(): PantherCrawler
     {
         $this->start();
+        $this->drainResponseRecorder();
         $elements = $this->webDriver->findElements(WebDriverBy::cssSelector('html'));
 
         return new PantherCrawler($elements, $this->webDriver, $this->webDriver->getCurrentURL());
@@ -601,6 +662,9 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
 
     public function quit(bool $quitBrowserManager = true): void
     {
+        $this->responseRecorder?->close();
+        $this->responseRecorder = null;
+
         if (null !== $this->webDriver) {
             $this->webDriver->quit();
             $this->webDriver = null;
@@ -782,6 +846,44 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         }
 
         return true;
+    }
+
+    private function startResponseRecorder(): void
+    {
+        $this->responseRecorder = $this->responseRecorderError = null;
+
+        if (!$this->webDriver instanceof RemoteWebDriver || !\is_string($url = $this->webDriver->getCapabilities()?->getCapability('webSocketUrl'))) {
+            return;
+        }
+
+        try {
+            $this->responseRecorder = NavigationResponseRecorder::connect($url);
+        } catch (\Throwable $e) {
+            $this->responseRecorderError = \sprintf('HttpFoundation Response object is not available: cannot use WebDriver BiDi (%s).', $e->getMessage());
+        }
+    }
+
+    /**
+     * @return array{type: string, status: int}|null
+     */
+    private function getNavigationTiming(): ?array
+    {
+        $timing = $this->webDriver->executeScript('const e = performance.getEntriesByType("navigation")[0]; return e ? {type: e.type, status: e.responseStatus ?? -1} : null;');
+
+        return \is_array($timing) ? ['type' => (string) $timing['type'], 'status' => (int) $timing['status']] : null;
+    }
+
+    /**
+     * Consumes pending BiDi events so that they don't pile up between calls to getResponse().
+     */
+    private function drainResponseRecorder(): void
+    {
+        try {
+            $this->responseRecorder?->drain();
+        } catch (\Throwable $e) {
+            $this->responseRecorder = null;
+            $this->responseRecorderError = \sprintf('HttpFoundation Response object is not available: the WebDriver BiDi connection failed (%s).', $e->getMessage());
+        }
     }
 
     /**

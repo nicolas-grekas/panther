@@ -25,6 +25,8 @@ use Symfony\Component\BrowserKit\AbstractBrowser;
 use Symfony\Component\BrowserKit\Cookie;
 use Symfony\Component\BrowserKit\CookieJar as BrowserKitCookieJar;
 use Symfony\Component\DomCrawler\Crawler as DomCrawlerCrawler;
+use Symfony\Component\HttpFoundation\Cookie as HttpFoundationCookie;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\KernelInterface;
 use Symfony\Component\Panther\Client;
 use Symfony\Component\Panther\Cookie\CookieJar;
@@ -639,6 +641,137 @@ JS, ['.p-1']);
         $client->request('GET', '/prefers-reduced-motion.html');
 
         $client->clickLink('Click me!');
+    }
+
+    #[DataProvider('providePrefersReducedMotion')]
+    /**
+     * @dataProvider providePrefersReducedMotion
+     */
+    public function testGetResponse(string $browser): void
+    {
+        $client = self::createPantherClient(['browser' => $browser]);
+        $client->request('GET', '/response.php?code=404');
+
+        $response = $client->getResponse();
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertSame(404, $response->getStatusCode());
+        $this->assertSame('GET', $response->headers->get('X-Panther-Method'));
+        $this->assertSame(['first', 'second'], array_map(static fn (HttpFoundationCookie $cookie) => $cookie->getName(), $response->headers->getCookies()));
+        $this->assertStringContainsString('<p id="code">404</p>', $response->getContent());
+        // The raw body, not the DOM modified by JavaScript
+        $this->assertStringNotContainsString('</script><p id="js">', $response->getContent());
+        $this->assertStringContainsString('</script><p id="js">', $client->getPageSource());
+        $this->assertSame('added by JavaScript', $client->getCrawler()->filter('#js')->text());
+
+        $client->request('GET', '/response.php?code=201#fragment');
+        $this->assertSame(201, $client->getResponse()->getStatusCode());
+
+        $client->request('GET', '/response.php?latin1=1');
+        $this->assertStringContainsString("<p id=\"text\">caf\xE9</p>", $client->getResponse()->getContent());
+    }
+
+    #[DataProvider('providePrefersReducedMotion')]
+    /**
+     * @dataProvider providePrefersReducedMotion
+     */
+    public function testGetResponseAfterNavigation(string $browser): void
+    {
+        $client = self::createPantherClient(['browser' => $browser]);
+
+        $client->request('GET', '/response.php?redirect=203');
+        $this->assertSame(203, $client->getResponse()->getStatusCode(), 'redirect');
+
+        $client->clickLink('Not found');
+        $this->assertSame(404, $client->getResponse()->getStatusCode(), 'click');
+
+        $client->back();
+        $this->assertSame(203, $client->getResponse()->getStatusCode(), 'back');
+
+        $client->forward();
+        $this->assertSame(404, $client->getResponse()->getStatusCode(), 'forward');
+
+        $client->clickLink('Redirect');
+        $this->assertSame(201, $client->getResponse()->getStatusCode(), 'click on a redirect');
+
+        $client->reload();
+        $this->assertSame(201, $client->getResponse()->getStatusCode(), 'reload');
+
+        $client->submitForm('Submit');
+        // Like the crawler, the response is the one of the document displayed when it's called: with Chrome, submitting doesn't wait for the navigation
+        $client->wait()->until(static fn ($driver) => str_ends_with($driver->getCurrentURL(), '422'));
+        $this->assertSame(422, $client->getResponse()->getStatusCode(), 'submit');
+        $this->assertSame('POST', $client->getResponse()->headers->get('X-Panther-Method'));
+
+        $client->executeScript('location.href = "/response.php?code=410"');
+        $client->waitFor('#code');
+        $client->wait()->until(static fn ($driver) => str_ends_with($driver->getCurrentURL(), '410'));
+        $this->assertSame(410, $client->getResponse()->getStatusCode(), 'JavaScript navigation');
+    }
+
+    #[DataProvider('providePrefersReducedMotion')]
+    /**
+     * @dataProvider providePrefersReducedMotion
+     */
+    public function testGetResponseAssertions(string $browser): void
+    {
+        $client = self::createPantherClient(['browser' => $browser]);
+        $client->request('GET', '/response.php?code=404');
+
+        $this->assertResponseStatusCodeSame(404);
+        $this->assertResponseHasCookie('first');
+    }
+
+    #[DataProvider('providePrefersReducedMotion')]
+    /**
+     * @dataProvider providePrefersReducedMotion
+     */
+    public function testGetResponseWithoutHttpResponse(string $browser): void
+    {
+        $client = self::createPantherClient(['browser' => $browser]);
+        $client->request('GET', '/response.php');
+        $client->navigate()->to('about:blank');
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('HttpFoundation Response object is not available for the current page');
+
+        $client->getResponse();
+    }
+
+    #[DataProvider('providePrefersReducedMotion')]
+    /**
+     * @dataProvider providePrefersReducedMotion
+     */
+    public function testGetResponseWithCustomCapabilities(string $browser): void
+    {
+        self::stopWebServer();
+        $client = self::createPantherClient(['browser' => $browser], [], ['capabilities' => ['acceptInsecureCerts' => true]]);
+        $client->request('GET', '/response.php?code=404');
+
+        try {
+            $this->assertSame(404, $client->getResponse()->getStatusCode());
+        } finally {
+            self::stopWebServer();
+        }
+    }
+
+    #[DataProvider('providePrefersReducedMotion')]
+    /**
+     * @dataProvider providePrefersReducedMotion
+     */
+    public function testGetResponseWithBidiDisabled(string $browser): void
+    {
+        self::stopWebServer();
+        $client = self::createPantherClient(['browser' => $browser], [], ['capabilities' => ['webSocketUrl' => false]]);
+        $client->request('GET', '/response.php?code=404');
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('set the "webSocketUrl" capability to true to enable it');
+
+        try {
+            $client->getResponse();
+        } finally {
+            self::stopWebServer();
+        }
     }
 
     public static function providePrefersReducedMotion(): iterable

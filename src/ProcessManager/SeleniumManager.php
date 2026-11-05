@@ -17,6 +17,7 @@ use Facebook\WebDriver\Remote\DesiredCapabilities;
 use Facebook\WebDriver\Remote\RemoteWebDriver;
 use Facebook\WebDriver\WebDriver;
 use Facebook\WebDriver\WebDriverCapabilities;
+use Symfony\Component\Panther\WebDriver\Bidi\BidiCapabilities;
 
 /**
  * @author Dmitry Kuzmin <rockwith@me.com>
@@ -39,9 +40,15 @@ final class SeleniumManager implements BrowserManagerInterface
 
     public function start(): WebDriver
     {
+        $capabilities = $this->capabilities;
+        if ($capabilities instanceof DesiredCapabilities && !$capabilities instanceof BidiCapabilities && null !== $capabilities->getCapability('webSocketUrl')) {
+            // php-webdriver would drop this standard capability
+            $capabilities = new BidiCapabilities($capabilities->toArray());
+        }
+
         return RemoteWebDriver::create(
             $this->host,
-            $this->capabilities,
+            $capabilities,
             $this->options['connection_timeout_in_ms'] ?? null, $this->options['request_timeout_in_ms'] ?? null
         );
     }

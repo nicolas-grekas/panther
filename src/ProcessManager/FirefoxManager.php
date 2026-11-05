@@ -14,10 +14,10 @@ declare(strict_types=1);
 namespace Symfony\Component\Panther\ProcessManager;
 
 use Facebook\WebDriver\Firefox\FirefoxOptions;
-use Facebook\WebDriver\Remote\DesiredCapabilities;
 use Facebook\WebDriver\Remote\RemoteWebDriver;
 use Facebook\WebDriver\WebDriver;
 use Symfony\Component\Panther\Exception\RuntimeException;
+use Symfony\Component\Panther\WebDriver\Bidi\BidiCapabilities;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 
@@ -38,7 +38,7 @@ final class FirefoxManager implements BrowserManagerInterface
     public function __construct(?string $geckodriverBinary = null, ?array $arguments = null, array $options = [])
     {
         $this->options = array_merge($this->getDefaultOptions(), $options);
-        $this->process = new Process([$geckodriverBinary ?: $this->findGeckodriverBinary(), '--port='.$this->options['port']], null, null, null, null);
+        $this->process = new Process([$geckodriverBinary ?: $this->findGeckodriverBinary(), '--port='.$this->options['port'], '--websocket-port=0'], null, null, null, null);
         $this->arguments = $arguments ?? $this->getDefaultArguments();
     }
 
@@ -62,7 +62,9 @@ final class FirefoxManager implements BrowserManagerInterface
             $firefoxOptions['args'] = $this->arguments;
         }
 
-        $capabilities = DesiredCapabilities::firefox();
+        $capabilities = BidiCapabilities::firefox();
+        // Enable WebDriver BiDi, used to expose the HTTP response of the current page; can be disabled with the "webSocketUrl" capability
+        $capabilities->setCapability('webSocketUrl', true);
         $capabilities->setCapability('moz:firefoxOptions', $firefoxOptions);
 
         // Prefer reduced motion, see https://developer.mozilla.org/fr/docs/Web/CSS/@media/prefers-reduced-motion
