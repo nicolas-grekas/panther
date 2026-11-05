@@ -658,9 +658,16 @@ JS, ['.p-1']);
         $this->assertSame('GET', $response->headers->get('X-Panther-Method'));
         $this->assertSame(['first', 'second'], array_map(static fn (HttpFoundationCookie $cookie) => $cookie->getName(), $response->headers->getCookies()));
         $this->assertStringContainsString('<p id="code">404</p>', $response->getContent());
+        // The raw body, not the DOM modified by JavaScript
+        $this->assertStringNotContainsString('</script><p id="js">', $response->getContent());
+        $this->assertStringContainsString('</script><p id="js">', $client->getPageSource());
+        $this->assertSame('added by JavaScript', $client->getCrawler()->filter('#js')->text());
 
         $client->request('GET', '/response.php?code=201#fragment');
         $this->assertSame(201, $client->getResponse()->getStatusCode());
+
+        $client->request('GET', '/response.php?latin1=1');
+        $this->assertStringContainsString("<p id=\"text\">caf\xE9</p>", $client->getResponse()->getContent());
     }
 
     #[DataProvider('providePrefersReducedMotion')]

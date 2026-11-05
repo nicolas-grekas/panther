@@ -19,6 +19,9 @@ if (isset($_GET['redirect'])) {
 }
 
 http_response_code((int) ($_GET['code'] ?? 200));
+if (isset($_GET['latin1'])) {
+    header('Content-Type: text/html; charset=iso-8859-1');
+}
 header('X-Panther-Method: '.$_SERVER['REQUEST_METHOD']);
 setcookie('first', '1');
 setcookie('second', '2');
@@ -30,6 +33,8 @@ setcookie('second', '2');
 </head>
 <body>
     <p id="code"><?php echo (int) ($_GET['code'] ?? 200); ?></p>
+    <p id="text"><?php echo isset($_GET['latin1']) ? "caf\xE9" : 'café'; ?></p>
+    <script>document.body.insertAdjacentHTML('beforeend', '<p id="js">added by JavaScript</p>')</script>
     <a href="/response.php?code=404">Not found</a>
     <a href="/response.php?redirect=201">Redirect</a>
     <form method="post" action="/response.php?code=422">

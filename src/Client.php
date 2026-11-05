@@ -160,7 +160,7 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
      * Returns the HTTP response of the page currently displayed in the browser.
      *
      * Requires WebDriver BiDi (enabled by default with Chrome and Firefox, use the "webSocketUrl" capability with Selenium).
-     * The content is the current DOM of the page, not the raw HTTP body.
+     * The content is the raw HTTP body when the browser can provide it, the current DOM of the page otherwise.
      */
     public function getResponse(): object
     {
@@ -171,7 +171,18 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         }
 
         try {
-            $data = $this->responseRecorder->getResponse($this->webDriver->getWindowHandle(), $this->webDriver->getCurrentURL(...), self::RESPONSE_TIMEOUT);
+            $data = $this->responseRecorder->getResponse($this->webDriver->getWindowHandle(), $this->webDriver->getCurrentURL(...), $this->getNavigationTiming(...), self::RESPONSE_TIMEOUT);
+            $body = null;
+            if (null !== $data) {
+                $contentType = '';
+                foreach ($data['response']['headers'] ?? [] as $header) {
+                    if ('content-type' === strtolower($header['name'])) {
+                        $contentType = $header['value']['value'] ?? '';
+                    }
+                }
+                $charset = preg_match('{;\s*charset\s*=\s*"?([\w.:-]+)}i', $contentType, $m) ? $m[1] : null;
+                $body = $this->responseRecorder->getBody($data['request'], $charset, self::RESPONSE_TIMEOUT);
+            }
         } catch (RuntimeException|\JsonException $e) {
             throw new LogicException(\sprintf('HttpFoundation Response object is not available: the WebDriver BiDi connection failed (%s).', $e->getMessage()), 0, $e);
         }
@@ -179,6 +190,7 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         if (null === $data) {
             throw new LogicException('HttpFoundation Response object is not available for the current page (no HTTP response was received for it).');
         }
+        $data = $data['response'];
 
         $headers = [];
         foreach ($data['headers'] ?? [] as $header) {
@@ -192,7 +204,7 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
             }
         }
 
-        $response = new HttpFoundationResponse($this->webDriver->getPageSource(), $data['status'], $headers);
+        $response = new HttpFoundationResponse($body ?? $this->webDriver->getPageSource(), $data['status'], $headers);
         $response->setStatusCode($data['status'], '' !== ($data['statusText'] ?? '') ? $data['statusText'] : null);
         if (preg_match('{^(?:http/)?(\d(?:\.\d)?)$}i', $data['protocol'] ?? '', $m)) {
             $response->setProtocolVersion(str_contains($m[1], '.') ? $m[1] : $m[1].'.0');
@@ -849,6 +861,16 @@ final class Client extends AbstractBrowser implements WebDriver, JavaScriptExecu
         } catch (\Throwable $e) {
             $this->responseRecorderError = \sprintf('HttpFoundation Response object is not available: cannot use WebDriver BiDi (%s).', $e->getMessage());
         }
+    }
+
+    /**
+     * @return array{type: string, status: int}|null
+     */
+    private function getNavigationTiming(): ?array
+    {
+        $timing = $this->webDriver->executeScript('const e = performance.getEntriesByType("navigation")[0]; return e ? {type: e.type, status: e.responseStatus ?? -1} : null;');
+
+        return \is_array($timing) ? ['type' => (string) $timing['type'], 'status' => (int) $timing['status']] : null;
     }
 
     /**
