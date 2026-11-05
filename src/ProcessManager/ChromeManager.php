@@ -14,10 +14,10 @@ declare(strict_types=1);
 namespace Symfony\Component\Panther\ProcessManager;
 
 use Facebook\WebDriver\Chrome\ChromeOptions;
-use Facebook\WebDriver\Remote\DesiredCapabilities;
 use Facebook\WebDriver\Remote\RemoteWebDriver;
 use Facebook\WebDriver\WebDriver;
 use Symfony\Component\Panther\Exception\RuntimeException;
+use Symfony\Component\Panther\WebDriver\Bidi\BidiCapabilities;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 
@@ -54,7 +54,9 @@ final class ChromeManager implements BrowserManagerInterface
             $this->waitUntilReady($this->process, $url.$this->options['path'], 'chrome');
         }
 
-        $capabilities = DesiredCapabilities::chrome();
+        $capabilities = BidiCapabilities::chrome();
+        // Enable WebDriver BiDi, used to expose the HTTP response of the current page; can be disabled with the "webSocketUrl" capability
+        $capabilities->setCapability('webSocketUrl', true);
 
         foreach ($this->options['capabilities'] as $capability => $value) {
             $capabilities->setCapability($capability, $value);
@@ -147,23 +149,13 @@ final class ChromeManager implements BrowserManagerInterface
 
     private function getDefaultOptions(): array
     {
-        $chromeOptions = new ChromeOptions();
-        $chromeOptions->setExperimentalOption('perfLoggingPrefs', [
-            'enableNetwork' => true,
-        ]);
-
         return [
             'scheme' => 'http',
             'host' => '127.0.0.1',
             'port' => 9515,
             'path' => '/status',
             'chromedriver_arguments' => [],
-            'capabilities' => [
-                'goog:loggingPrefs' => [
-                    'performance' => 'ALL',
-                ],
-                ChromeOptions::CAPABILITY => $chromeOptions,
-            ],
+            'capabilities' => [],
         ];
     }
 }

@@ -5,6 +5,9 @@ CHANGELOG
 -----
 
 * Disable the search engine choice screen by default in Chrome
+* Add support for `Client::getResponse()`: the HttpFoundation `Response` of the current page is built from WebDriver BiDi network events (status code, headers, cookies; the content is the current DOM)
+* Enable WebDriver BiDi (`webSocketUrl` capability) by default with Chrome and Firefox, set the `webSocketUrl` capability to `false` to disable it
+* Start geckodriver with `--websocket-port=0` to prevent BiDi port collisions (requires geckodriver >= 0.31)
 
 2.3.0
 -----
